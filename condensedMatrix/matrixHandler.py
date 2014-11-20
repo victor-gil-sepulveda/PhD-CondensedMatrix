@@ -3,12 +3,11 @@ Created on 19/09/2012
 
 @author: victor
 """
+import math
 import json
 import numpy
 import os.path
-import pyRMSD.RMSDCalculator
-from pyRMSD.condensedMatrix import CondensedMatrix #@UnresolvedImport
-import math
+from condensedMatrix.matrix import CondensedMatrix 
 
 class MatrixHandler(object):
 
@@ -26,24 +25,6 @@ class MatrixHandler(object):
         """
         @return: The inner condensed matrix.
         """
-        return self.distance_matrix
-
-    def createMatrix(self, pdb_coordsets, calculator = "QCP_OMP_CALCULATOR"):
-        """
-        Generates a condensed matrix given a set of coordinates (usually representing a trajectory) and
-        a calculator definition.
-
-        @param pdb_coordsets: Input coordinates in Prody format.
-        @param calculator: One of the possible available calculator types.
-
-        @return: A consensed matrix with the pairwise RMSD matrix.
-        """
-        print "Calculating matrix..."
-        rmsd = pyRMSD.RMSDCalculator.RMSDCalculator(pdb_coordsets, calculator).pairwiseRMSDMatrix()
-        self.distance_matrix = CondensedMatrix(rmsd)
-        self.distance_matrix.recalculateStatistics()
-        self.__save_statistics()
-        print " Done\n"
         return self.distance_matrix
 
     def saveMatrix(self, matrix_file_without_extension):
