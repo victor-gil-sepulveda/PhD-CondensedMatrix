@@ -4,7 +4,6 @@
  * 3 - Hacer lo mismo para las estadísticas y los neighbours!
  */
 
-#include "Statistics.h"
 #include <Python.h>
 #include <structmember.h>
 #include <numpy/arrayobject.h>
@@ -12,25 +11,27 @@
 #include <algorithm>
 #include <iostream>
 #include <vector>
-using namespace std;
 
-#define calc_vector_pos(i,j,matrix) (i*(matrix->row_length_minus_one) - i - ((( i-1)*i) >> 1 ) + j - 1)
+#include "Statistics.h"
+#include "CondensedMatrix/CondensedMatrix.h"
+#include "CondensedMatrix/DataTypes.h"
+using namespace std;
 
 typedef struct {
     PyObject_HEAD
-    long int row_length;
-    long int data_size;
+    
+    // The condensed matrix itself
+    C_CondensedMatrix_DummyBase* matrix;
     
     // Data
-    double* data;
     PyObject* numpy_array;
+    unsigned long int data_size;
+    unsigned long int row_length;
+    
     
     // Statistics
     StatisticsCalculator* statisticsCalculator;
    
-    // Precalculated stuff
-    PyObject* zero;
-    long int row_length_minus_one;
 } CondensedMatrix;
 
 /*
@@ -38,9 +39,9 @@ typedef struct {
  */
 static void condensedMatrix_dealloc(CondensedMatrix* self){
 
+	delete self->matrix;
+	
 	delete self->statisticsCalculator;
-
-	Py_XDECREF(self->zero);
 	
 	Py_DECREF(self->numpy_array);
 	
@@ -54,13 +55,8 @@ static PyObject* condensedMatrix_new(PyTypeObject *type, PyObject *args, PyObjec
 	CondensedMatrix* self;
 	self = (CondensedMatrix*) type->tp_alloc(type, 0);
     if (self != NULL) {
-    	self->row_length = 0;
-    	self->data_size = 0;
-    	
-        self->data = NULL;
+    	self->matrix = NULL;
     	self->numpy_array = NULL;
-    	
-    	self->zero =  Py_BuildValue("d", 0.); // To be returned always that a 0 is needed
     	self->statisticsCalculator = NULL;
     }
     return (PyObject *) self;
@@ -76,31 +72,60 @@ static int condensedMatrix_init(CondensedMatrix *self, PyObject *args, PyObject 
 
 	if (PyArray_Check(input)){
 		PyArrayObject* numpy_array = (PyArrayObject*) input;
+		self->numpy_array = input;
 		
-		if ( numpy_array->nd != 1) {
+		if ( numpy_array->nd != 1) { // or PyArray_NDIM(PyArrayObject *arr)
 			PyErr_SetString(PyExc_ValueError, "[CondensedMatrix] Input numpy array must be a 1D vector.");
 			return -1;
 		}
 		
-		if (numpy_array->descr->type_num != DATA_TYPE_DOUBLE){
-			PyErr_SetString(PyExc_ValueError, "[CondensedMatrix] Input array must be a DOUBLE.");
-			return -1;
+		// Create the matrix object
+		switch (numpy_array->descr->type_num){
+			case NPY_INT:
+			{
+				self->matrix = new C_CondensedMatrix<npy_int>(PyArray_GETPTR1(self->numpy_array,0),
+						TYPE_INT,
+						PyArray_DIMS(numpy_array)[0]);
+			}
+			case NPY_LONG:
+			{
+				self->matrix = new C_CondensedMatrix<npy_long>(PyArray_GETPTR1(self->numpy_array,0),
+						TYPE_LONG,
+						PyArray_DIMS(numpy_array)[0]);
+			}
+			break;
+			case NPY_FLOAT:
+			{
+				self->matrix = new C_CondensedMatrix<npy_float>(PyArray_GETPTR1(self->numpy_array,0),
+						TYPE_FLOAT,
+						PyArray_DIMS(numpy_array)[0]);
+			}
+			break;
+			case NPY_DOUBLE:
+			{
+				self->matrix = new C_CondensedMatrix<npy_double>(PyArray_GETPTR1(self->numpy_array,0),
+						TYPE_DOUBLE,
+						PyArray_DIMS(numpy_array)[0]);
+			}
+			break;
+			default:
+				PyErr_SetString(PyExc_ValueError, "[CondensedMatrix] Data type not in supported data types ( INT, LONG, FLOAT, DOUBLE). Please recast your array.");
+				return -1;
 		}
-
-		self->data_size = PyArray_DIMS(numpy_array)[0];
-		self->row_length = (long int) (1 + sqrt(1+8*self->data_size))/2;
-		self->row_length_minus_one = self->row_length - 1;
-		self->data = PyArray_GETPTR1(self->numpy_array,0);
+		
+		self->row_length = self->matrix->row_length;
+		self->data_size = self->matrix->data_size;
+		
+		// Let's alloc the statistics object
+		//self->statisticsCalculator =  new StatisticsCalculator(self->data, self->data_size);
+		
+		// Increase reference (we are using the array)
+		Py_INCREF(self->numpy_array);
 	}
 	else{
 		PyErr_SetString(PyExc_RuntimeError, "[CondensedMatrix] You must use a numpy array to feed the matrix.");
 	}
 
-	// Let's alloc the statistics object
-	self->statisticsCalculator =  new StatisticsCalculator(self->data, self->data_size);
-
-	// Increase reference (we are using the array)
-	Py_INCREF(self->numpy_array);
 	return 0;
 }
 
@@ -109,13 +134,13 @@ char data_size_text[] = "data_size";
 char bogus_description_text[] = "TODO";
 
 static PyMemberDef condensedMatrix_members[] = {
-    {row_length_text, T_INT, offsetof(CondensedMatrix, row_length), READONLY,	PyDoc_STR(bogus_description_text)},
+    {row_length_text, T_INT, offsetof(CondensedMatrix, row_length), READONLY, PyDoc_STR(bogus_description_text)},
     {data_size_text, T_INT, offsetof(CondensedMatrix, data_size), READONLY, PyDoc_STR(bogus_description_text)},
-    {NULL}  /* Sentinel */
+    {NULL}  // Sentinel 
 };
 
 static PyObject* condensedMatrix_get_number_of_rows(CondensedMatrix* self, PyObject *args){
-	return Py_BuildValue("i", self->row_length);
+	return Py_BuildValue("i", self->matrix->row_length);
 }
 
 static PyObject* condensedMatrix_get_data(CondensedMatrix* self, PyObject *args){
@@ -123,16 +148,92 @@ static PyObject* condensedMatrix_get_data(CondensedMatrix* self, PyObject *args)
 	return  PyArray_Return((PyArrayObject*) self->numpy_array);
 }
 
-#include "Matrix.Statistics.cpp"
+static PyObject* condensedMatrix_get_data_type(CondensedMatrix* self, PyObject *args){
+	return  Py_BuildValue("s", DataType_to_string(self->matrix->d_type).c_str());
+}
 
-#include "Matrix.Neighbours.cpp"
+
+PyObject* condensedMatrix_subscript(CondensedMatrix *self, PyObject *key){
+	unsigned long i = PyInt_AS_LONG(PyTuple_GET_ITEM(key,0));
+	unsigned long j = PyInt_AS_LONG(PyTuple_GET_ITEM(key,1));
+	
+	switch (self->matrix->d_type){
+		case TYPE_INT:
+		{
+			npy_int result;
+			dynamic_cast<C_CondensedMatrix<npy_int>* >(self->matrix)->get_element_at(i, j, &result);
+			return PyInt_FromLong(result);
+		}
+		break;
+		case TYPE_LONG:
+		{
+			npy_long result;
+			dynamic_cast<C_CondensedMatrix<npy_long>* >(self->matrix)->get_element_at(i, j, &result);
+			return PyLong_FromLong(result);
+		}
+		break;
+		case TYPE_FLOAT:
+		{
+			npy_float result;
+			dynamic_cast<C_CondensedMatrix<npy_float>* >(self->matrix)->get_element_at(i, j, &result);
+			return PyFloat_FromDouble((double) result);
+		}
+		break;
+		case TYPE_DOUBLE:
+		{
+			npy_double result;
+			dynamic_cast<C_CondensedMatrix<npy_double>* >(self->matrix)->get_element_at(i, j, &result);
+			return PyFloat_FromDouble((double) result);
+		}
+		break;
+	}
+	return NULL;
+}
+
+int condensedMatrix_ass_subscript(CondensedMatrix *self, PyObject *key, PyObject *v){
+	unsigned long i = PyInt_AS_LONG(PyTuple_GET_ITEM(key,0));
+	unsigned long j = PyInt_AS_LONG(PyTuple_GET_ITEM(key,1));
+	
+	switch (self->matrix->d_type){
+		case TYPE_INT:
+		{
+			npy_int value = (npy_int) PyInt_AS_LONG(v);
+			dynamic_cast<C_CondensedMatrix<npy_int>* >( self->matrix)->set_element_at(i, j, value);
+		}
+		break;
+		case TYPE_LONG:
+		{
+			npy_long value = (npy_long) PyInt_AS_LONG(v);
+			dynamic_cast<C_CondensedMatrix<npy_long>* >( self->matrix)->set_element_at(i, j, value);
+		}
+		break;
+		case TYPE_FLOAT:
+		{
+			npy_float value = (npy_float) PyFloat_AS_DOUBLE(v);
+			dynamic_cast<C_CondensedMatrix<npy_float>* >( self->matrix)->set_element_at(i, j, value);
+		}
+		break;
+		case TYPE_DOUBLE:
+		{
+			npy_double value = (npy_double) PyFloat_AS_DOUBLE(v);
+			dynamic_cast<C_CondensedMatrix<npy_double>* >( self->matrix)->set_element_at(i, j, value);
+		}
+		break;
+	}
+	return 0;
+}
+
+Py_ssize_t condensedMatrix_length(CondensedMatrix *self){
+	return self->matrix->row_length;
+}
 
 static PyMethodDef condensedMatrix_methods[] = {
 	// Basic field access
 	{"get_number_of_rows", (PyCFunction) condensedMatrix_get_number_of_rows, METH_NOARGS,PyDoc_STR("description")},
 	{"get_data", (PyCFunction) condensedMatrix_get_data, METH_NOARGS,PyDoc_STR("description")},
-
-	// Statistics
+	{"get_data_type", (PyCFunction) condensedMatrix_get_data_type, METH_NOARGS,PyDoc_STR("description")},
+	
+	/*// Statistics
 	{"recalculateStatistics", (PyCFunction) condensedMatrix_calculate_statistics, METH_NOARGS,PyDoc_STR("description")},
 	{"calculateMean", 		(PyCFunction) condensedMatrix_get_mean, METH_NOARGS,PyDoc_STR("description")},
 	{"calculateVariance", 	(PyCFunction) condensedMatrix_get_variance, METH_NOARGS,PyDoc_STR("description")},
@@ -145,71 +246,10 @@ static PyMethodDef condensedMatrix_methods[] = {
 	{"get_neighbors_for_node", (PyCFunction)condensedMatrix_get_neighbors_for_node, METH_VARARGS,PyDoc_STR("description")},
 	{"choose_node_with_higher_cardinality", (PyCFunction)condensedMatrix_choose_node_with_higher_cardinality, METH_VARARGS,PyDoc_STR("description")},
 	{"element_neighbors_within_radius",(PyCFunction)condensedMatrix_get_neighbors_of_node_for_radius, METH_VARARGS,PyDoc_STR("description")},
-	//{"calculate_rw_laplacian", (PyCFunction)condensedMatrix_calculate_rw_laplacian, METH_NOARGS,PyDoc_STR("description")},
+	 *///{"calculate_rw_laplacian", (PyCFunction)condensedMatrix_calculate_rw_laplacian, METH_NOARGS,PyDoc_STR("description")},
 	//{"calculate_affinity_matrix", (PyCFunction)condensedMatrix_calculate_affinity_matrix, METH_VARARGS,PyDoc_STR("description")},
 	{NULL}  /* Sentinel */
 };
-
-PyObject* condensedMatrix_subscript(CondensedMatrix *self, PyObject *key){
-	int pos, i,j;
-	i = PyInt_AS_LONG(PyTuple_GET_ITEM(key,0));
-	j = PyInt_AS_LONG(PyTuple_GET_ITEM(key,1));
-
-	if (i < j){
-		pos = calc_vector_pos(i,j,self);
-		return PyFloat_FromDouble((double)self->data[pos]);
-	}
-	else{
-		if (i==j){
-			Py_INCREF(self->zero);
-			return self->zero;
-		}
-		else{
-			pos = calc_vector_pos(j,i,self);
-			return PyFloat_FromDouble((double)self->data[pos]);
-		}
-	}
-}
-
-int condensedMatrix_ass_subscript(CondensedMatrix *self, PyObject *key, PyObject *v){
-	int pos, i,j;
-	i = PyInt_AS_LONG(PyTuple_GET_ITEM(key,0));
-	j = PyInt_AS_LONG(PyTuple_GET_ITEM(key,1));
-
-	if (i < j){
-		pos = calc_vector_pos(i,j,self);
-		self->data[pos] = (float) PyFloat_AsDouble(v);
-		/////////////////////////////////////////
-		// BEWARE!!!!!! SLOW AND REDUNDANT HACK
-		/////////////////////////////////////////
-		// ALTERNATIVE: in construction use PyObject *PyArray_FROM_OTF(PyObject* obj, int typenum, int requirements) with
-		// http://docs.scipy.org/doc/numpy/user/c-info.how-to-extend.html?highlight=pyarray_simplenew#PyArray_SimpleNew
-		// NPY_ARRAY_INOUT_ARRAY
-		// NPY_ARRAY_FORCECAST
-		// NPY_ARRAY_ENSURECOPY
-		// NPY_ARRAY_ENSUREARRAY
-		if(self->numpy_array != NULL){
-			((double*) PyArray_GETPTR1(self->numpy_array,0))[pos] =self->data[pos];
-		}
-	}
-	else{
-		if (i!=j){
-			pos = calc_vector_pos(j,i,self);
-			self->data[pos] = (float) PyFloat_AsDouble(v);
-			/////////////////////////////////////////
-			// BEWARE!!!!!! SLOW AND REDUNDANT HACK
-			/////////////////////////////////////////
-			if(self->numpy_array != NULL){
-				((double*) PyArray_GETPTR1(self->numpy_array,0))[pos] =self->data[pos];
-			}
-		}
-	}
-	return 0;
-}
-
-Py_ssize_t condensedMatrix_length(CondensedMatrix *self){
-	return self->row_length;
-}
 
 static PyMappingMethods pdb_as_mapping = {
     (lenfunc)     	condensedMatrix_length,				/*mp_length*/
@@ -264,13 +304,13 @@ static PyTypeObject CondensedMatrixType = {
 #endif
 
 
-PyMODINIT_FUNC initcondensedMatrix(void){
+PyMODINIT_FUNC initmatrix(void){
     PyObject* module;
 
     if (PyType_Ready(&CondensedMatrixType) < 0)
         return;
 
-    module = Py_InitModule3("condensedMatrix", NULL,"Fast Access Condensed Matrix");
+    module = Py_InitModule3("matrix", NULL,"Fast Access Condensed Matrix");
     if (module == NULL)
           return;
 

@@ -5,9 +5,9 @@ Created on 07/08/2012
 """
 import time
 import random
-from condensedMatrix import CondensedMatrix
+from condensedMatrix.matrix import CondensedMatrix
 import condensedMatrix.benchmark.alias.condensedMatrix as PythonCondensedMatrix
-import pyRMSD.benchmark.alias.CythonCondensedMatrix as CythonCondensedMatrixes #@UnresolvedImport
+import condensedMatrix.benchmark.alias.CythonCondensedMatrix as CythonCondensedMatrixes #@UnresolvedImport
 
 if __name__ == '__main__':
     

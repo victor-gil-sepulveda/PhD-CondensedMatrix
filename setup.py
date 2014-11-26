@@ -11,10 +11,11 @@ import os
 def read(fname):
     return open(os.path.join(os.path.dirname(__file__), fname)).read()
 
+import condensedMatrix
 
 setup(
       name = 'CondensedMatrix',
-      version = '0.0.1',
+      version = condensedMatrix.__version__,
       description = 'Fast access implementation of a distance matrix (symmetric, 0 diagonal).',
       author = 'Victor Alejandro Gil Sepulveda',
       author_email = 'victor.gil.sepulveda@gmail.com',
